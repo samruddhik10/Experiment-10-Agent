@@ -63,7 +63,7 @@ def summarize_topic(topic, results):
     )
 
     response = requests.post(
-        "http://localhost:11434/api/chat",
+       "http://host.docker.internal:11434/api/chat",
         json={
             "model": "llama3.2:3b",
             "stream": False,
