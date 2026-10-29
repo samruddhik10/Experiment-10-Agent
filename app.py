@@ -1,4 +1,5 @@
 
+import os
 import time
 import logging
 
@@ -7,19 +8,22 @@ import streamlit as st
 from ddgs import DDGS
 
 
-# -------------------------------
+# --------------------------------
 # 1. Configure logging
-# -------------------------------
+# --------------------------------
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
+
 logger = logging.getLogger(__name__)
 
 
-# -------------------------------
+# --------------------------------
 # 2. Configure Streamlit page
-# -------------------------------
+# --------------------------------
+
 st.set_page_config(
     page_title="AI Research Assistant",
     page_icon="🔎",
@@ -27,33 +31,45 @@ st.set_page_config(
 )
 
 st.title("AI Research Assistant")
+
 st.write(
-    "Enter a topic to get a three-point research brief "
-    "based on current web search results."
+    "Enter a topic to search the web and generate "
+    "a three-point research brief using AI."
 )
 
 
-# -------------------------------
+# --------------------------------
 # 3. Search the web
-# -------------------------------
+# --------------------------------
+
 def search_web(topic):
-    """Search the web and return relevant results."""
+    """Search the web using DuckDuckGo."""
+
     results = DDGS().text(
         topic,
         max_results=5,
         backend="auto",
     )
+
     return list(results or [])
 
 
-# -------------------------------
-# 4. Summarize using Ollama
-# -------------------------------
+# --------------------------------
+# 4. Generate AI research brief
+# --------------------------------
+
 def summarize_topic(topic, results):
-    """Generate a three-point brief using the local Ollama model."""
+    """Generate a research brief using Hugging Face."""
 
     if not results:
         raise ValueError("No search results were returned.")
+
+    hf_token = os.getenv("HF_TOKEN")
+
+    if not hf_token:
+        raise ValueError(
+            "HF_TOKEN environment variable is missing."
+        )
 
     sources = "\n\n".join(
         f"Title: {item.get('title', '')}\n"
@@ -63,19 +79,21 @@ def summarize_topic(topic, results):
     )
 
     response = requests.post(
-       "http://host.docker.internal:11434/api/chat",
+        "https://router.huggingface.co/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {hf_token}",
+            "Content-Type": "application/json",
+        },
         json={
-            "model": "llama3.2:3b",
-            "stream": False,
+            "model": "openai/gpt-oss-120b:fastest",
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "You are a research assistant. Use only the "
-                        "provided search results to produce exactly "
-                        "three concise bullet points. Be clear and "
-                        "factual. Do not invent facts. Mention when "
-                        "the sources do not provide enough information."
+                        "You are an AI research assistant. "
+                        "Use only the supplied search results. "
+                        "Generate exactly three clear and concise "
+                        "bullet points. Do not invent facts."
                     ),
                 },
                 {
@@ -91,82 +109,118 @@ def summarize_topic(topic, results):
     )
 
     response.raise_for_status()
+
     data = response.json()
 
-    return data["message"]["content"]
+    return data["choices"][0]["message"]["content"]
 
 
-# -------------------------------
-# 5. User input
-# -------------------------------
+# --------------------------------
+# 5. Display search results
+# --------------------------------
+
+def display_search_results(results):
+    """Display original web search results."""
+
+    st.subheader("Web Search Results")
+
+    if not results:
+        st.warning("No search results found.")
+        return
+
+    for index, item in enumerate(results, start=1):
+
+        title = item.get("title", "No title")
+        description = item.get(
+            "body",
+            "No description available.",
+        )
+        url = item.get("href", "")
+
+        st.markdown(f"**{index}. {title}**")
+
+        st.write(description)
+
+        if url:
+            st.markdown(f"[Read source]({url})")
+
+        st.divider()
+
+
+# --------------------------------
+# 6. Main Streamlit application
+# --------------------------------
+
 topic = st.text_input(
-    "Enter a research topic",
-    placeholder="e.g., Artificial Intelligence in Healthcare",
+    "Enter your research topic",
+    placeholder="Example: Artificial Intelligence in Healthcare",
 )
 
-generate_button = st.button(
-    "Generate Research Brief",
-    type="primary",
-)
+if st.button("Generate Research Brief", type="primary"):
 
-
-# -------------------------------
-# 6. Generate and display brief
-# -------------------------------
-if generate_button:
     if not topic.strip():
+
         st.warning("Please enter a research topic.")
 
     else:
+
         start_time = time.time()
-        logger.info("Research request received: %s", topic)
 
         try:
-            with st.spinner(
-                "Searching the web and generating your brief..."
-            ):
+
+            # Search the web
+            with st.spinner("Searching the web..."):
+
                 results = search_web(topic)
-                summary = summarize_topic(topic, results)
-
-            st.subheader("Research Brief")
-            st.markdown(summary)
-
-            st.subheader("Sources")
-
-            for item in results:
-                title = item.get("title") or "Web source"
-                url = item.get("href", "")
-
-                if url:
-                    st.markdown(f"- [{title}]({url})")
-                else:
-                    st.markdown(f"- {title}")
-
-            duration = time.time() - start_time
 
             logger.info(
-                "Research request completed in %.2f seconds",
+                "Search completed | Topic: %s | Results: %d",
+                topic,
+                len(results),
+            )
+
+            # Display original search results
+            display_search_results(results)
+
+            # Generate AI brief
+            with st.spinner(
+                "Generating your three-point research brief..."
+            ):
+
+                brief = summarize_topic(topic, results)
+
+            # Display AI-generated output
+            st.subheader("Three-Point Research Brief")
+
+            st.markdown(brief)
+
+            # Calculate request duration
+            duration = time.time() - start_time
+
+            st.success("Research brief generated successfully!")
+
+            st.caption(
+                f"Total request duration: {duration:.2f} seconds"
+            )
+
+            logger.info(
+                "Request completed | Topic: %s | Duration: %.2f seconds",
+                topic,
                 duration,
             )
 
-            st.caption(
-                f"Request duration: {duration:.2f} seconds"
-            )
+        except requests.exceptions.HTTPError as e:
 
-        except requests.exceptions.ConnectionError:
-            duration = time.time() - start_time
-            logger.exception("Could not connect to Ollama")
+            logger.exception("Hugging Face API error.")
 
             st.error(
-                "Could not connect to Ollama. Make sure Ollama "
-                "is installed and running on your Mac."
+                f"Hugging Face API error: {e.response.status_code}"
             )
-            st.caption(f"Failed request duration: {duration:.2f} seconds")
 
-        except Exception as error:
-            duration = time.time() - start_time
+            st.write(e.response.text[:1000])
 
-            logger.exception("Research request failed")
+        except Exception as e:
 
-            st.error(f"Something went wrong: {error}")
-            st.caption(f"Failed request duration: {duration:.2f} seconds")
+            logger.exception("Research request failed.")
+
+            st.error(f"An error occurred: {str(e)}")
